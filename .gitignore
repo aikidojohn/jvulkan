@@ -8,5 +8,11 @@ dependency-reduced-pom.xml
 buildNumber.properties
 .mvn/timing.properties
 
+#IntelliJ
+.idea/shelf/
+.idea/workspace.xml
+.idea/usage.statistics.xml
+
 # Avoid ignoring Maven wrapper jar file (.jar files are usually ignored)
 !/.mvn/wrapper/maven-wrapper.jar
+
