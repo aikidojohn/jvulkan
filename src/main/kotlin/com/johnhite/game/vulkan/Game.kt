@@ -13,9 +13,6 @@ import org.lwjgl.vulkan.KHRPortabilityEnumeration.VK_KHR_PORTABILITY_ENUMERATION
 import org.lwjgl.vulkan.KHRSurface.*
 import org.lwjgl.vulkan.KHRSwapchain.*
 import org.lwjgl.vulkan.VK10.*
-import java.lang.StringBuilder
-import java.nio.ByteBuffer
-import java.nio.IntBuffer
 
 fun checkVk(errcode: Int) {
     if (errcode != 0) {
@@ -34,7 +31,15 @@ class Game {
     private lateinit var devices: List<PhysicalDevice>
     private lateinit var gpu: PhysicalDevice
     private lateinit var device: LogicalDevice
+    private var commandPool: Long = 0L
+    private lateinit var commandBuffer: VkCommandBuffer
     private lateinit var swapchain: SwapChain
+    private lateinit var pipeline: Pipeline
+    private lateinit var renderPass: RenderPass
+    private val frameBuffers = ArrayList<FrameBuffer>()
+    private var imageAvailableSemaphore: Long = 0L
+    private var renderFinishedSemaphore: Long = 0L
+    private var inFlightFence: Long = 0L
 
     private val extensionNames = MemoryUtil.memAllocPointer(64)
     private val debugUtilExtensionName = MemoryUtil.memASCII(EXTDebugUtils.VK_EXT_DEBUG_UTILS_EXTENSION_NAME)
@@ -263,6 +268,156 @@ class Game {
         }
     }
 
+    private fun createCommandPool() {
+        MemoryStack.stackPush().use { stack ->
+            val lp = stack.mallocLong(1)
+            val poolInfo = VkCommandPoolCreateInfo.calloc(stack)
+                .`sType$Default`()
+                .flags(VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT)
+                .queueFamilyIndex(device.graphicsQueueIndex)
+
+            checkVk(vkCreateCommandPool(device.device, poolInfo, null, lp))
+            commandPool = lp[0]
+
+            val commandInfo = VkCommandBufferAllocateInfo.calloc(stack)
+                .`sType$Default`()
+                .commandPool(commandPool)
+                .level(VK_COMMAND_BUFFER_LEVEL_PRIMARY)
+                .commandBufferCount(1)
+
+            val pp = stack.mallocPointer(1)
+            checkVk(vkAllocateCommandBuffers(device.device, commandInfo, pp))
+            commandBuffer = VkCommandBuffer(pp[0], device.device)
+        }
+    }
+
+    fun recordCommandBuffer(imageIndex: Int) {
+        MemoryStack.stackPush().use { stack->
+            val beginInfo = VkCommandBufferBeginInfo.calloc(stack)
+                .`sType$Default`()
+            checkVk(vkBeginCommandBuffer(commandBuffer, beginInfo))
+
+
+            val clearValue = VkClearValue.calloc(1, stack)
+            clearValue[0].color()
+                .float32(0, 0f)
+                .float32(1, 0f)
+                .float32(2, 0f)
+                .float32(3, 1f)
+
+            val renderPassInfo = VkRenderPassBeginInfo.calloc(stack)
+                .`sType$Default`()
+                .renderPass(renderPass.renderPass)
+                .framebuffer(frameBuffers[imageIndex].frameBuffer)
+                .renderArea { renderArea->
+                    val offset = VkOffset2D.malloc(stack)
+                    offset.set(0, 0)
+                    renderArea.offset(offset)
+                        .extent(swapchain.extent)
+                }
+                .clearValueCount(1)
+                .pClearValues(clearValue)
+
+            vkCmdBeginRenderPass(commandBuffer, renderPassInfo, VK_SUBPASS_CONTENTS_INLINE)
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.graphicsPipeline)
+
+            val viewport = VkViewport.calloc(1, stack)
+            viewport[0]
+                .x(0f)
+                .y(0f)
+                .width(swapchain.extent.width().toFloat())
+                .height(swapchain.extent.height().toFloat())
+                .minDepth(0f)
+                .maxDepth(1f)
+            vkCmdSetViewport(commandBuffer, 0,  viewport)
+
+            val scissor = VkRect2D.calloc(1, stack)
+            scissor[0].offset()
+                .x(0)
+                .y(0)
+            scissor[0].extent(swapchain.extent)
+            vkCmdSetScissor(commandBuffer, 0, scissor)
+
+            vkCmdDraw(commandBuffer, 3, 1,0, 0)
+            vkCmdEndRenderPass(commandBuffer)
+
+            checkVk(vkEndCommandBuffer(commandBuffer))
+        }
+    }
+
+    fun createSyncObjects() {
+        MemoryStack.stackPush().use { stack ->
+            val semaphoreInfo = VkSemaphoreCreateInfo.calloc(stack)
+                .`sType$Default`()
+
+            val fenceInfo = VkFenceCreateInfo.calloc(stack)
+                .`sType$Default`()
+                .flags(VK_FENCE_CREATE_SIGNALED_BIT)
+
+            val lp = stack.mallocLong(1)
+            vkCreateSemaphore(device.device, semaphoreInfo, null, lp)
+            imageAvailableSemaphore = lp[0]
+            vkCreateSemaphore(device.device, semaphoreInfo, null, lp)
+            renderFinishedSemaphore= lp[0]
+            vkCreateFence(device.device, fenceInfo, null, lp)
+            inFlightFence = lp[0]
+        }
+    }
+
+    fun drawFrame() {
+        MemoryStack.stackPush().use { stack->
+            vkWaitForFences(device.device, inFlightFence, true, ULong.MAX_VALUE.toLong())
+            vkResetFences(device.device, inFlightFence)
+            val ip = stack.mallocInt(1)
+            vkAcquireNextImageKHR(device.device, swapchain.swapchain, ULong.MAX_VALUE.toLong(), imageAvailableSemaphore, VK_NULL_HANDLE, ip)
+            val imageIndex = ip[0]
+
+            vkResetCommandBuffer(commandBuffer, 0)
+            recordCommandBuffer(imageIndex)
+
+            val waitSemaphore = stack.mallocLong(1)
+            waitSemaphore.put(imageAvailableSemaphore)
+            waitSemaphore.rewind()
+
+            val signalSemaphore = stack.mallocLong(1)
+            signalSemaphore.put(renderFinishedSemaphore)
+            signalSemaphore.rewind()
+
+            val waitStages = stack.mallocInt(1)
+            waitStages.put(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT)
+            waitStages.rewind()
+
+            val commandBufferPointer = stack.mallocPointer(1)
+            commandBufferPointer.put(commandBuffer.address())
+            commandBufferPointer.rewind()
+
+            val submitInfo = VkSubmitInfo.calloc(stack)
+                .`sType$Default`()
+                .pWaitSemaphores(waitSemaphore)
+                .waitSemaphoreCount(1)
+                .pWaitDstStageMask(waitStages)
+                .pCommandBuffers(commandBufferPointer)
+                .pSignalSemaphores(signalSemaphore)
+
+            checkVk(vkQueueSubmit(device.graphicsQueue, submitInfo, inFlightFence))
+
+            val swapChains = stack.mallocLong(1)
+            swapChains.put(swapchain.swapchain)
+            swapChains.rewind()
+
+            ip.rewind()
+            ip.put(imageIndex)
+            ip.rewind()
+            val presentInfo = VkPresentInfoKHR.calloc(stack)
+                .`sType$Default`()
+                .pWaitSemaphores(signalSemaphore)
+                .swapchainCount(1)
+                .pSwapchains(swapChains)
+                .pImageIndices(ip)
+
+            vkQueuePresentKHR(device.graphicsQueue, presentInfo)
+        }
+    }
     fun run() {
         try {
             initWindow(1024, 768, "Vulkan")
@@ -275,12 +430,21 @@ class Game {
             }
             gpu = selectPhysicalDevice(devices)
             device = LogicalDevice(gpu)
+            createCommandPool()
             swapchain = SwapChain(device, surface, window)
+            renderPass = RenderPass(device, swapchain)
+            pipeline = Pipeline(device, renderPass)
+            for (i in swapchain.imageViews.indices) {
+                frameBuffers.add(FrameBuffer(device, renderPass, swapchain, i))
+            }
+            createSyncObjects()
 
             while (!glfwWindowShouldClose(window)) {
                 glfwPollEvents()
+                drawFrame()
 
             }
+            vkDeviceWaitIdle(device.device)
         }
         finally {
             destroy()
@@ -288,8 +452,25 @@ class Game {
     }
 
     private fun destroy() {
+        if (commandPool != 0L) {
+            vkDestroyCommandPool(device.device, commandPool, null)
+        }
+
+        vkDestroyFence(device.device, inFlightFence, null)
+        vkDestroySemaphore(device.device, imageAvailableSemaphore, null)
+        vkDestroySemaphore(device.device, renderFinishedSemaphore, null)
+
+        if (this::pipeline.isInitialized) {
+            pipeline.close()
+        }
+        for (f in frameBuffers) {
+            f.close()
+        }
         if (this::swapchain.isInitialized) {
             swapchain.close()
+        }
+        if (this::renderPass.isInitialized) {
+            renderPass.close()
         }
         if (this::device.isInitialized) {
             device.close()
@@ -309,366 +490,6 @@ class Game {
         }
         glfwDestroyWindow(window)
         glfwTerminate()
-    }
-}
-
-class SwapChain(private val device: LogicalDevice, surface: Long, window: Long) : AutoCloseable {
-    val capabilities = VkSurfaceCapabilitiesKHR.malloc()
-    val formats: VkSurfaceFormatKHR.Buffer
-    val presentModes: IntBuffer
-    val format: VkSurfaceFormatKHR
-    val presentMode: Int
-    val extent = VkExtent2D.malloc()
-    val swapchain: Long
-    val images = ArrayList<Long>()
-
-    init {
-        MemoryStack.stackPush().use { stack ->
-            val physical = device.device.physicalDevice
-            vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical, surface, capabilities)
-
-            val ip = stack.mallocInt(1)
-            vkGetPhysicalDeviceSurfaceFormatsKHR(physical, surface, ip, null)
-
-            if (ip[0] > 0) {
-                formats = VkSurfaceFormatKHR.malloc(ip[0])
-                vkGetPhysicalDeviceSurfaceFormatsKHR(physical, surface, ip, formats)
-            } else {
-                throw RuntimeException("Device does not support any surface formats!")
-            }
-
-            vkGetPhysicalDeviceSurfacePresentModesKHR(physical, surface, ip, null as IntBuffer?)
-            if (ip[0] > 0) {
-                presentModes = MemoryUtil.memAllocInt(ip[0])
-                vkGetPhysicalDeviceSurfacePresentModesKHR(physical, surface, ip, presentModes)
-            } else {
-                throw RuntimeException("Device does not support any present modes!")
-            }
-
-            //Select format
-            format = formats.stream().filter { f -> f.format() == VK_FORMAT_B8G8R8A8_SRGB && f.colorSpace() == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR }
-                .findFirst()
-                .orElse(formats[0])
-
-            //Select present mode
-            var pm = VK_PRESENT_MODE_FIFO_KHR
-            for (i in 0 until presentModes.capacity()) {
-                if (presentModes[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
-                     pm = VK_PRESENT_MODE_MAILBOX_KHR
-                    break;
-                }
-            }
-            presentMode = pm
-
-            //Select swap extent
-            if (capabilities.currentExtent().width() >= Int.MAX_VALUE || capabilities.currentExtent().width() < 0) {
-                //High Density Display
-                val width = stack.mallocInt(1)
-                val height = stack.mallocInt(1)
-                glfwGetFramebufferSize(window, width, height)
-                extent.set(
-                    Utils.clampInt(width[0], capabilities.minImageExtent().width(), capabilities.maxImageExtent().width()),
-                    Utils.clampInt(height[0], capabilities.minImageExtent().height(), capabilities.maxImageExtent().height())
-                )
-            } else {
-                extent.set(capabilities.currentExtent().width(), capabilities.currentExtent().height())
-            }
-
-            val imageCount = if (capabilities.maxImageCount() == 0 || capabilities.minImageCount() + 1 <= capabilities.maxImageCount()) capabilities.minImageCount() + 1 else capabilities.minImageCount()
-            //Create Swapchain
-            val swapChainCreateInfo = VkSwapchainCreateInfoKHR.calloc(stack)
-            swapChainCreateInfo
-                .sType(VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR)
-                .surface(surface)
-                .minImageCount(imageCount)
-                .imageFormat(format.format())
-                .imageColorSpace(format.colorSpace())
-                .imageExtent(extent)
-                .imageArrayLayers(1)
-                .imageUsage(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)
-                .preTransform(capabilities.currentTransform())
-                .compositeAlpha(VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR)
-                .presentMode(presentMode)
-                .clipped(true)
-                .oldSwapchain(VK_NULL_HANDLE)
-
-            if (device.queueFamilyIndices.size > 1) {
-                val queueFamilies = stack.mallocInt(device.queueFamilyIndices.size)
-                for (family in device.queueFamilyIndices) {
-                    queueFamilies.put(family)
-                }
-                queueFamilies.rewind()
-
-                swapChainCreateInfo
-                    .imageSharingMode(VK_SHARING_MODE_CONCURRENT)
-                    .queueFamilyIndexCount(device.queueFamilyIndices.size)
-                    .pQueueFamilyIndices(queueFamilies)
-            }
-            else {
-                swapChainCreateInfo.imageSharingMode(VK_SHARING_MODE_EXCLUSIVE)
-            }
-
-            //Create swap chain
-            val lp = stack.mallocLong(1)
-            checkVk(vkCreateSwapchainKHR(device.device, swapChainCreateInfo, null, lp))
-            swapchain = lp[0]
-
-            //Get swapchain images
-            vkGetSwapchainImagesKHR(device.device, swapchain, ip, null)
-            val imagePointers = stack.mallocLong(ip[0])
-            vkGetSwapchainImagesKHR(device.device, swapchain, ip, imagePointers)
-            for (i in 0 until imagePointers.capacity()) {
-                images.add(imagePointers[i])
-            }
-        }
-    }
-
-
-    override fun close() {
-        vkDestroySwapchainKHR(device.device, swapchain, null)
-        capabilities.free()
-        formats.free()
-        MemoryUtil.memFree(presentModes)
-        extent.free()
-    }
-}
-
-class LogicalDevice(physical: PhysicalDevice) : AutoCloseable {
-    val graphicsQueue: VkQueue
-    val presentQueue: VkQueue
-    val device: VkDevice
-    val presentEqualsGraphics: Boolean
-    val queueFamilyIndices: Set<Int>
-
-    init {
-        //TODO queues should be a constructor parameter
-        val graphicsQueues = physical.filterQueueFamilies { q ->
-            (q.queueFlags() and VK_QUEUE_GRAPHICS_BIT) != 0
-        }
-
-        val presentQueueIndex = physical.queueSurfaceSupportIndices[0]
-        val graphicsQueueIndex = graphicsQueues[0]
-        val queues = setOf(presentQueueIndex, graphicsQueueIndex)
-        presentEqualsGraphics = queues.size == 1
-        queueFamilyIndices = queues
-
-        MemoryStack.stackPush().use { stack ->
-            val queueCreateInfo = VkDeviceQueueCreateInfo.calloc(queues.size, stack)
-            val priority = stack.mallocFloat(1)
-            priority.put(1.0f)
-            priority.rewind()
-
-            for ((i, qIndex) in queues.withIndex()) {
-                queueCreateInfo[i].sType(VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO)
-                queueCreateInfo[i].queueFamilyIndex(qIndex)
-                queueCreateInfo[i].pQueuePriorities(priority)
-                queueCreateInfo[i].pNext(MemoryUtil.NULL)
-                queueCreateInfo[i].flags(0)
-            }
-
-            //TODO extension list should be a constructor parameter
-            val enabledExtensions = stack.mallocPointer(1)
-            enabledExtensions.put(stack.ASCII(VK_KHR_SWAPCHAIN_EXTENSION_NAME))
-            enabledExtensions.rewind()
-
-            val deviceCreateInfo = VkDeviceCreateInfo.calloc(stack)
-            deviceCreateInfo.sType(VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO)
-            deviceCreateInfo.pQueueCreateInfos(queueCreateInfo)
-            deviceCreateInfo.pEnabledFeatures(physical.features)
-            deviceCreateInfo.ppEnabledExtensionNames(enabledExtensions)
-            deviceCreateInfo.flags(0)
-            deviceCreateInfo.pNext(MemoryUtil.NULL)
-
-
-            val pp = stack.mallocPointer(1)
-            checkVk(vkCreateDevice(physical.device, deviceCreateInfo,null,pp))
-            device = VkDevice(pp[0], physical.device, deviceCreateInfo)
-
-            vkGetDeviceQueue(device, presentQueueIndex, 0, pp)
-            presentQueue = VkQueue(pp[0], device)
-
-            vkGetDeviceQueue(device, graphicsQueueIndex, 0, pp)
-            graphicsQueue = VkQueue(pp[0], device)
-        }
-    }
-
-    override fun close() {
-        vkDestroyDevice(device, null)
-    }
-}
-
-class PhysicalDevice(val device: VkPhysicalDevice) : AutoCloseable {
-    val properties: VkPhysicalDeviceProperties = VkPhysicalDeviceProperties.malloc()
-    val features: VkPhysicalDeviceFeatures = VkPhysicalDeviceFeatures.malloc()
-    val extensions: VkExtensionProperties.Buffer
-    val queueFamilies: VkQueueFamilyProperties.Buffer
-    val queueSurfaceSupportIndices = ArrayList<Int>()
-
-    init {
-        MemoryStack.stackPush().use { stack ->
-            val ip = stack.mallocInt(1)
-            vkGetPhysicalDeviceProperties(device, properties)
-            vkGetPhysicalDeviceFeatures(device, features)
-
-            vkGetPhysicalDeviceQueueFamilyProperties(device, ip, null)
-            queueFamilies = VkQueueFamilyProperties.malloc(ip[0])
-            vkGetPhysicalDeviceQueueFamilyProperties(device, ip, queueFamilies)
-            check(ip[0] != 0)
-
-            vkEnumerateDeviceExtensionProperties(device, null as String?, ip, null)
-            extensions = VkExtensionProperties.malloc(ip[0])
-            vkEnumerateDeviceExtensionProperties(device, null as String?, ip, extensions)
-        }
-    }
-
-    fun supportsExtensions(requestedExtensions : Set<String>) : Boolean {
-        val intersection = this.extensions.stream().map { e -> e.extensionNameString() }.filter { e -> requestedExtensions.contains(e) }.toList()
-        if (intersection.size == requestedExtensions.size) {
-            return true
-        } else {
-            val missing = requestedExtensions.subtract(intersection.toSet())
-            for (m in missing) {
-                println("Missing extension: $m")
-            }
-        }
-        return false
-    }
-
-    fun checkSurfaceSupport(surface: Long) {
-        MemoryStack.stackPush().use { stack ->
-            val supportsPresent = stack.mallocInt(queueFamilies.capacity())
-            for (i in 0 until supportsPresent.capacity()) {
-                supportsPresent.position(i)
-                KHRSurface.vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, supportsPresent)
-                if (supportsPresent[i] == VK_TRUE) {
-                    queueSurfaceSupportIndices.add(i)
-                }
-            }
-        }
-    }
-
-    fun filterQueueFamilies(filter: (q: VkQueueFamilyProperties) -> Boolean) : List<Int> {
-        val indices = ArrayList<Int>()
-        for (i in 0 until queueFamilies.capacity()) {
-            if (filter.invoke(queueFamilies[i])) {
-                indices.add(i)
-            }
-        }
-        return indices;
-    }
-
-    override fun toString(): String {
-        val sb = StringBuilder()
-        sb.append(properties.deviceNameString())
-        sb.append("\n")
-        val deviceType = if (properties.deviceType() == VK_PHYSICAL_DEVICE_TYPE_CPU)
-            "CPU"
-        else if (properties.deviceType() == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
-            "Discrete GPU"
-        else if (properties.deviceType() == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU)
-            "Integrated GPU"
-        else if (properties.deviceType() == VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU)
-            "Virtual GPU"
-        else
-            "Unknown"
-        sb.append("\tDevice Type: $deviceType\n")
-        for (i in 0 until queueFamilies.capacity()) {
-            sb.append("\tQueue Family:\n")
-            sb.append("\t\tGraphics: ${(queueFamilies[i].queueFlags() and VK_QUEUE_GRAPHICS_BIT) != 0}\n")
-            sb.append("\t\tCompute: ${(queueFamilies[i].queueFlags() and VK_QUEUE_COMPUTE_BIT) != 0}\n")
-            sb.append("\t\tTransfer: ${(queueFamilies[i].queueFlags() and VK_QUEUE_TRANSFER_BIT) != 0}\n")
-            sb.append("\t\tSparse Binding: ${(queueFamilies[i].queueFlags() and VK_QUEUE_SPARSE_BINDING_BIT) != 0}\n")
-        }
-        return sb.toString()
-    }
-
-    override fun close() {
-        properties.free()
-        features.free()
-        extensions.free()
-        queueFamilies.free()
-    }
-}
-
-class DebugMessenger(private val instance: VkInstance) : AutoCloseable {
-
-    companion object {
-        private val dbgFunc: VkDebugUtilsMessengerCallbackEXT =
-            VkDebugUtilsMessengerCallbackEXT.create { messageSeverity: Int, messageTypes: Int, pCallbackData: Long, pUserData: Long ->
-                val severity: String =
-                    if (messageSeverity and EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT != 0) {
-                        "VERBOSE"
-                    } else if (messageSeverity and EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT != 0) {
-                        "INFO"
-                    } else if (messageSeverity and EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT != 0) {
-                        "WARNING"
-                    } else if (messageSeverity and EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT != 0) {
-                        "ERROR"
-                    } else {
-                        "UNKNOWN"
-                    }
-                val type: String =
-                    if (messageTypes and EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT != 0) {
-                        "GENERAL"
-                    } else if (messageTypes and EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT != 0) {
-                        "VALIDATION"
-                    } else if (messageTypes and EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT != 0) {
-                        "PERFORMANCE"
-                    } else {
-                        "UNKNOWN"
-                    }
-                val data = VkDebugUtilsMessengerCallbackDataEXT.create(pCallbackData)
-                System.err.format(
-                    "%s %s: [%s]\n\t%s\n",
-                    type, severity, data.pMessageIdNameString(), data.pMessageString()
-                )
-                VK_FALSE
-            }
-
-        fun getDebugUtilsCreateInfo() : VkDebugUtilsMessengerCreateInfoEXT {
-            MemoryStack.stackPush().use { stack ->
-                return VkDebugUtilsMessengerCreateInfoEXT.calloc(stack)
-                    .`sType$Default`()
-                    .pNext(MemoryUtil.NULL)
-                    .flags(0)
-                    .messageSeverity( /*VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
-                        VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT |*/
-                        EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT or
-                                EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT
-                    )
-                    .messageType(
-                        EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT or
-                                EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT or
-                                EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT
-                    )
-                    .pfnUserCallback(dbgFunc)
-                    .pUserData(MemoryUtil.NULL)
-            }
-        }
-    }
-
-    val msgCallback: Long
-
-    init {
-        MemoryStack.stackPush().use { stack ->
-            val lp = stack.mallocLong(1)
-            val err = EXTDebugUtils.vkCreateDebugUtilsMessengerEXT(instance, getDebugUtilsCreateInfo(), null, lp)
-            msgCallback = when (err) {
-                VK_SUCCESS -> lp[0]
-                VK_ERROR_OUT_OF_HOST_MEMORY -> throw IllegalStateException("CreateDebugReportCallback: out of host memory")
-                else -> throw IllegalStateException("CreateDebugReportCallback: unknown failure")
-            }
-        }
-    }
-
-    fun destroy() {
-        EXTDebugUtils.vkDestroyDebugUtilsMessengerEXT(instance, msgCallback, null)
-        dbgFunc.free()
-    }
-
-    override fun close() {
-        EXTDebugUtils.vkDestroyDebugUtilsMessengerEXT(instance, msgCallback, null)
-        dbgFunc.free()
     }
 }
 

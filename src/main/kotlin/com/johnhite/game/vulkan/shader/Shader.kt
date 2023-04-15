@@ -1,13 +1,45 @@
 package com.johnhite.game.vulkan.shader
 
+import com.johnhite.game.vulkan.LogicalDevice
 import com.johnhite.game.vulkan.Resources
+import com.johnhite.game.vulkan.checkVk
+import org.lwjgl.system.MemoryStack
+import org.lwjgl.system.MemoryUtil
 import org.lwjgl.util.shaderc.Shaderc
+import org.lwjgl.vulkan.VK10.*
+import org.lwjgl.vulkan.VkShaderModuleCreateInfo
 import java.io.File
 import java.nio.ByteBuffer
 
-class Shader {
+class Shader(val id: Long, private val device: LogicalDevice) : AutoCloseable {
 
     companion object {
+        fun load(device: LogicalDevice, shaderSrc: File) : Shader {
+            val code = compile(shaderSrc)
+            return Shader(create(device, code), device)
+        }
+
+        fun load(device: LogicalDevice, resourcePath: String) : Shader {
+            val code = compile(resourcePath)
+            val id = create(device, code)
+            return Shader(id, device)
+        }
+        fun create(device: LogicalDevice, byteCode: ByteBuffer) : Long {
+            MemoryStack.stackPush().use { stack ->
+                val createInfo = VkShaderModuleCreateInfo.calloc(stack)
+                    .sType(VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO)
+                    .pCode(byteCode)
+
+                val lp = stack.mallocLong(1)
+                checkVk(vkCreateShaderModule(device.device, createInfo, null, lp))
+                return lp[0]
+            }
+        }
+
+        fun compile(resourcePath: String) : ByteBuffer {
+            return compile(Resources.getFile(resourcePath))
+        }
+
         fun compile(shaderSrc: File) : ByteBuffer {
             var compiler: Long? = null
             var result: Long? = null
@@ -32,8 +64,10 @@ class Shader {
                         Shaderc.shaderc_compilation_status_validation_error -> throw RuntimeException("Failed to compile shader: Validation Error: $msg")
                     }
                 }
-
-                return Shaderc.shaderc_result_get_bytes(result) ?: throw RuntimeException("Failed to read shader compilation result")
+                val spv = Shaderc.shaderc_result_get_bytes(result) ?: throw RuntimeException("Failed to read shader compilation result")
+                val ret = MemoryUtil.memAlloc(spv.capacity())
+                MemoryUtil.memCopy(spv, ret)
+                return ret
             }
             finally {
                 if (result != null) {
@@ -57,11 +91,15 @@ class Shader {
             }
         }
     }
+
+    override fun close() {
+        vkDestroyShaderModule(device.device, id, null)
+    }
 }
 
 fun main(args: Array<String>) {
-    val vert = Shader.compile(Resources.getFile("shaders/default.vert"))
-    val frag = Shader.compile(Resources.getFile("shaders/default.frag"))
+    val vert = Shader.compile("shaders/default.vert")
+    val frag = Shader.compile("shaders/default.frag")
     println(vert.capacity())
     println(frag.capacity())
 }
