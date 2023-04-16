@@ -23,6 +23,7 @@ fun checkVk(errcode: Int) {
 class Game {
 
     private val validate: Boolean = true
+    private val maxFramesInFlight = 2
 
     private var window: Long = -1L
     private var surface: Long = -1L
@@ -32,14 +33,15 @@ class Game {
     private lateinit var gpu: PhysicalDevice
     private lateinit var device: LogicalDevice
     private var commandPool: Long = 0L
-    private lateinit var commandBuffer: VkCommandBuffer
+    private var commandBuffers = ArrayList<VkCommandBuffer>()
     private lateinit var swapchain: SwapChain
     private lateinit var pipeline: Pipeline
     private lateinit var renderPass: RenderPass
     private val frameBuffers = ArrayList<FrameBuffer>()
-    private var imageAvailableSemaphore: Long = 0L
-    private var renderFinishedSemaphore: Long = 0L
-    private var inFlightFence: Long = 0L
+    private var imageAvailableSemaphore = LongArray(maxFramesInFlight)
+    private var renderFinishedSemaphore = LongArray(maxFramesInFlight)
+    private var inFlightFence = LongArray(maxFramesInFlight)
+    private var currentFrame = 0
 
     private val extensionNames = MemoryUtil.memAllocPointer(64)
     private val debugUtilExtensionName = MemoryUtil.memASCII(EXTDebugUtils.VK_EXT_DEBUG_UTILS_EXTENSION_NAME)
@@ -258,6 +260,9 @@ class Game {
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API)
         glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE)
         window = glfwCreateWindow(width, height, title, 0, 0)
+        glfwSetFramebufferSizeCallback(window) { win: Long, newWidth: Int, newHeight: Int ->
+            recreateSwapChain()
+        }
     }
 
     private fun initSurface() {
@@ -283,15 +288,16 @@ class Game {
                 .`sType$Default`()
                 .commandPool(commandPool)
                 .level(VK_COMMAND_BUFFER_LEVEL_PRIMARY)
-                .commandBufferCount(1)
+                .commandBufferCount(maxFramesInFlight)
 
-            val pp = stack.mallocPointer(1)
+            val pp = stack.mallocPointer(maxFramesInFlight)
             checkVk(vkAllocateCommandBuffers(device.device, commandInfo, pp))
-            commandBuffer = VkCommandBuffer(pp[0], device.device)
+            commandBuffers.add(VkCommandBuffer(pp[0], device.device))
+            commandBuffers.add(VkCommandBuffer(pp[1], device.device))
         }
     }
 
-    fun recordCommandBuffer(imageIndex: Int) {
+    fun recordCommandBuffer(imageIndex: Int, commandBuffer: VkCommandBuffer) {
         MemoryStack.stackPush().use { stack->
             val beginInfo = VkCommandBufferBeginInfo.calloc(stack)
                 .`sType$Default`()
@@ -355,32 +361,57 @@ class Game {
                 .flags(VK_FENCE_CREATE_SIGNALED_BIT)
 
             val lp = stack.mallocLong(1)
-            vkCreateSemaphore(device.device, semaphoreInfo, null, lp)
-            imageAvailableSemaphore = lp[0]
-            vkCreateSemaphore(device.device, semaphoreInfo, null, lp)
-            renderFinishedSemaphore= lp[0]
-            vkCreateFence(device.device, fenceInfo, null, lp)
-            inFlightFence = lp[0]
+            for (i in 0 until maxFramesInFlight) {
+                vkCreateSemaphore(device.device, semaphoreInfo, null, lp)
+                imageAvailableSemaphore[i] = lp[0]
+                vkCreateSemaphore(device.device, semaphoreInfo, null, lp)
+                renderFinishedSemaphore[i] = lp[0]
+                vkCreateFence(device.device, fenceInfo, null, lp)
+                inFlightFence[i] = lp[0]
+            }
+        }
+    }
+
+    fun recreateSwapChain() {
+        vkDeviceWaitIdle(device.device)
+
+        for (f in frameBuffers) {
+            f.close()
+        }
+        frameBuffers.clear()
+        swapchain.close()
+
+        swapchain = SwapChain(device, surface, window)
+        for (i in swapchain.imageViews.indices) {
+            frameBuffers.add(FrameBuffer(device, renderPass, swapchain, i))
         }
     }
 
     fun drawFrame() {
         MemoryStack.stackPush().use { stack->
-            vkWaitForFences(device.device, inFlightFence, true, ULong.MAX_VALUE.toLong())
-            vkResetFences(device.device, inFlightFence)
+            vkWaitForFences(device.device, inFlightFence[currentFrame], true, ULong.MAX_VALUE.toLong())
+
             val ip = stack.mallocInt(1)
-            vkAcquireNextImageKHR(device.device, swapchain.swapchain, ULong.MAX_VALUE.toLong(), imageAvailableSemaphore, VK_NULL_HANDLE, ip)
+            val result = vkAcquireNextImageKHR(device.device, swapchain.swapchain, ULong.MAX_VALUE.toLong(), imageAvailableSemaphore[currentFrame], VK_NULL_HANDLE, ip)
+            if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+                recreateSwapChain()
+                return
+            } else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
+                throw RuntimeException("Failed to acquire next image")
+            }
             val imageIndex = ip[0]
 
-            vkResetCommandBuffer(commandBuffer, 0)
-            recordCommandBuffer(imageIndex)
+            vkResetFences(device.device, inFlightFence[currentFrame])
+
+            vkResetCommandBuffer(commandBuffers[currentFrame], 0)
+            recordCommandBuffer(imageIndex, commandBuffers[currentFrame])
 
             val waitSemaphore = stack.mallocLong(1)
-            waitSemaphore.put(imageAvailableSemaphore)
+            waitSemaphore.put(imageAvailableSemaphore[currentFrame])
             waitSemaphore.rewind()
 
             val signalSemaphore = stack.mallocLong(1)
-            signalSemaphore.put(renderFinishedSemaphore)
+            signalSemaphore.put(renderFinishedSemaphore[currentFrame])
             signalSemaphore.rewind()
 
             val waitStages = stack.mallocInt(1)
@@ -388,7 +419,7 @@ class Game {
             waitStages.rewind()
 
             val commandBufferPointer = stack.mallocPointer(1)
-            commandBufferPointer.put(commandBuffer.address())
+            commandBufferPointer.put(commandBuffers[currentFrame].address())
             commandBufferPointer.rewind()
 
             val submitInfo = VkSubmitInfo.calloc(stack)
@@ -399,7 +430,7 @@ class Game {
                 .pCommandBuffers(commandBufferPointer)
                 .pSignalSemaphores(signalSemaphore)
 
-            checkVk(vkQueueSubmit(device.graphicsQueue, submitInfo, inFlightFence))
+            checkVk(vkQueueSubmit(device.graphicsQueue, submitInfo, inFlightFence[currentFrame]))
 
             val swapChains = stack.mallocLong(1)
             swapChains.put(swapchain.swapchain)
@@ -415,7 +446,14 @@ class Game {
                 .pSwapchains(swapChains)
                 .pImageIndices(ip)
 
-            vkQueuePresentKHR(device.graphicsQueue, presentInfo)
+            val presentResult = vkQueuePresentKHR(device.graphicsQueue, presentInfo)
+            if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR) {
+                recreateSwapChain()
+            } else if (presentResult != VK_SUCCESS) {
+                throw RuntimeException("Failed to present image")
+            }
+
+            currentFrame= (currentFrame+1) % maxFramesInFlight
         }
     }
     fun run() {
@@ -442,7 +480,6 @@ class Game {
             while (!glfwWindowShouldClose(window)) {
                 glfwPollEvents()
                 drawFrame()
-
             }
             vkDeviceWaitIdle(device.device)
         }
@@ -456,9 +493,11 @@ class Game {
             vkDestroyCommandPool(device.device, commandPool, null)
         }
 
-        vkDestroyFence(device.device, inFlightFence, null)
-        vkDestroySemaphore(device.device, imageAvailableSemaphore, null)
-        vkDestroySemaphore(device.device, renderFinishedSemaphore, null)
+        for (i in 0 until maxFramesInFlight) {
+            vkDestroyFence(device.device, inFlightFence[i], null)
+            vkDestroySemaphore(device.device, imageAvailableSemaphore[i], null)
+            vkDestroySemaphore(device.device, renderFinishedSemaphore[i], null)
+        }
 
         if (this::pipeline.isInitialized) {
             pipeline.close()
