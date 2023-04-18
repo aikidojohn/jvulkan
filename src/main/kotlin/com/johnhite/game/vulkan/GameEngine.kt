@@ -43,6 +43,8 @@ class Game {
     private var inFlightFence = LongArray(maxFramesInFlight)
     private var currentFrame = 0
 
+    private lateinit var vertexBuffer: SimpleVertexBuffer
+
     private val extensionNames = MemoryUtil.memAllocPointer(64)
     private val debugUtilExtensionName = MemoryUtil.memASCII(EXTDebugUtils.VK_EXT_DEBUG_UTILS_EXTENSION_NAME)
     private val portabilityExtensionName = MemoryUtil.memASCII(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)
@@ -327,6 +329,8 @@ class Game {
             vkCmdBeginRenderPass(commandBuffer, renderPassInfo, VK_SUBPASS_CONTENTS_INLINE)
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.graphicsPipeline)
 
+            vkCmdBindVertexBuffers(commandBuffer, 0, longArrayOf(vertexBuffer.buffer.bufferPtr), longArrayOf(0L))
+
             val viewport = VkViewport.calloc(1, stack)
             viewport[0]
                 .x(0f)
@@ -384,6 +388,24 @@ class Game {
         swapchain = SwapChain(device, surface, window)
         for (i in swapchain.imageViews.indices) {
             frameBuffers.add(FrameBuffer(device, renderPass, swapchain, i))
+        }
+    }
+
+    fun loadVertexData() : SimpleVertexBuffer {
+        MemoryStack.stackPush().use { stack ->
+            val buffer = Buffers.createBuffer(device, 15 * 4, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_SHARING_MODE_EXCLUSIVE, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT or VK_MEMORY_PROPERTY_HOST_COHERENT_BIT )
+            val vertexBuffer = SimpleVertexBuffer(buffer)
+            val vertData = stack.mallocFloat(15 * 4)
+            vertData.put(floatArrayOf(
+                0f, -.5f,   1f, 0f, 0f,
+                .5f, .5f,   0f, 1f, 0f,
+                -.5f, .5f,  0f, 0f, 1f,
+            ))
+            vertData.rewind()
+            val ptr = buffer.map()
+            MemoryUtil.memCopy(MemoryUtil.memAddress(vertData), ptr, 15 * 4)
+            buffer.unmap()
+            return vertexBuffer
         }
     }
 
@@ -471,7 +493,9 @@ class Game {
             createCommandPool()
             swapchain = SwapChain(device, surface, window)
             renderPass = RenderPass(device, swapchain)
-            pipeline = Pipeline(device, renderPass)
+
+            vertexBuffer = loadVertexData()
+            pipeline = Pipeline(device, renderPass, vertexBuffer)
             for (i in swapchain.imageViews.indices) {
                 frameBuffers.add(FrameBuffer(device, renderPass, swapchain, i))
             }
@@ -489,6 +513,7 @@ class Game {
     }
 
     private fun destroy() {
+        vertexBuffer.close()
         if (commandPool != 0L) {
             vkDestroyCommandPool(device.device, commandPool, null)
         }

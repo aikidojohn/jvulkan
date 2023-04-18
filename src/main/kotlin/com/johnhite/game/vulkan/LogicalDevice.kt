@@ -4,7 +4,7 @@ import org.lwjgl.system.MemoryStack
 import org.lwjgl.system.MemoryUtil
 import org.lwjgl.vulkan.*
 
-class LogicalDevice(physical: PhysicalDevice) : AutoCloseable {
+class LogicalDevice(val physical: PhysicalDevice) : AutoCloseable {
     val graphicsQueue: VkQueue
     val presentQueue: VkQueue
     val device: VkDevice

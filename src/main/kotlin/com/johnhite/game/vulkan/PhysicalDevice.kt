@@ -2,11 +2,13 @@ package com.johnhite.game.vulkan
 
 import org.lwjgl.system.MemoryStack
 import org.lwjgl.vulkan.*
+import org.lwjgl.vulkan.VK10.vkGetPhysicalDeviceMemoryProperties
 import java.lang.StringBuilder
 
 class PhysicalDevice(val device: VkPhysicalDevice) : AutoCloseable {
     val properties: VkPhysicalDeviceProperties = VkPhysicalDeviceProperties.malloc()
     val features: VkPhysicalDeviceFeatures = VkPhysicalDeviceFeatures.malloc()
+    val memoryProperties = VkPhysicalDeviceMemoryProperties.malloc()
     val extensions: VkExtensionProperties.Buffer
     val queueFamilies: VkQueueFamilyProperties.Buffer
     val queueSurfaceSupportIndices = ArrayList<Int>()
@@ -25,6 +27,8 @@ class PhysicalDevice(val device: VkPhysicalDevice) : AutoCloseable {
             VK10.vkEnumerateDeviceExtensionProperties(device, null as String?, ip, null)
             extensions = VkExtensionProperties.malloc(ip[0])
             VK10.vkEnumerateDeviceExtensionProperties(device, null as String?, ip, extensions)
+
+            vkGetPhysicalDeviceMemoryProperties(device, memoryProperties)
         }
     }
 
@@ -90,6 +94,7 @@ class PhysicalDevice(val device: VkPhysicalDevice) : AutoCloseable {
     }
 
     override fun close() {
+        memoryProperties.free()
         properties.free()
         features.free()
         extensions.free()

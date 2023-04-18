@@ -20,7 +20,7 @@ import org.lwjgl.vulkan.VkPipelineViewportStateCreateInfo
 import org.lwjgl.vulkan.VkRenderPassCreateInfo
 import org.lwjgl.vulkan.VkSubpassDescription
 
-class Pipeline(val device: LogicalDevice, val renderPass: RenderPass) : AutoCloseable {
+class Pipeline(val device: LogicalDevice, val renderPass: RenderPass, val vertexBuffer: Vertex) : AutoCloseable {
     val vertexShader = Shader.load(device, "shaders/default.vert")
     val fragmentShader = Shader.load(device, "shaders/default.frag")
     val graphicsPipeline: Long
@@ -51,10 +51,12 @@ class Pipeline(val device: LogicalDevice, val renderPass: RenderPass) : AutoClos
 
             val vertexInput = VkPipelineVertexInputStateCreateInfo.calloc(stack)
                 .`sType$Default`()
+                .pVertexBindingDescriptions(vertexBuffer.getBindingDescription())
+                .pVertexAttributeDescriptions(vertexBuffer.getAttributeDescription())
 
             val inputAssembly = VkPipelineInputAssemblyStateCreateInfo.calloc(stack)
                 .`sType$Default`()
-                .topology(VK_PRIMITIVE_TOPOLOGY_LINE_LIST)
+                .topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
                 .primitiveRestartEnable(false)
 
             val viewportState = VkPipelineViewportStateCreateInfo.calloc(stack)
