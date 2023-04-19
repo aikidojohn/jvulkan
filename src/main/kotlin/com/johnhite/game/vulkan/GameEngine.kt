@@ -393,18 +393,18 @@ class Game {
 
     fun loadVertexData() : SimpleVertexBuffer {
         MemoryStack.stackPush().use { stack ->
-            val buffer = Buffers.createBuffer(device, 15 * 4, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_SHARING_MODE_EXCLUSIVE, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT or VK_MEMORY_PROPERTY_HOST_COHERENT_BIT )
+            val stagingBuffer = Buffers.createBuffer(device, 15*4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_SHARING_MODE_EXCLUSIVE, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT or VK_MEMORY_PROPERTY_HOST_COHERENT_BIT )
+            val buffer = Buffers.createBuffer(device, 15 * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT or VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_SHARING_MODE_EXCLUSIVE, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
             val vertexBuffer = SimpleVertexBuffer(buffer)
-            val vertData = stack.mallocFloat(15 * 4)
-            vertData.put(floatArrayOf(
-                0f, -.5f,   1f, 0f, 0f,
-                .5f, .5f,   0f, 1f, 0f,
-                -.5f, .5f,  0f, 0f, 1f,
-            ))
-            vertData.rewind()
-            val ptr = buffer.map()
-            MemoryUtil.memCopy(MemoryUtil.memAddress(vertData), ptr, 15 * 4)
-            buffer.unmap()
+            stagingBuffer.mapFloatBuffer()
+                .put(floatArrayOf(
+                    0f, -.5f,   1f, 0f, 0f,
+                    .5f, .5f,   0f, 1f, 0f,
+                    -.5f, .5f,  0f, 0f, 1f,
+                )).rewind()
+            stagingBuffer.unmap()
+            Buffers.copy(stagingBuffer, buffer, device, commandPool)
+            stagingBuffer.close()
             return vertexBuffer
         }
     }
