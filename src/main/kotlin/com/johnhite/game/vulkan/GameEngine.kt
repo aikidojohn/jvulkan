@@ -44,6 +44,7 @@ class Game {
     private var currentFrame = 0
 
     private lateinit var vertexBuffer: SimpleVertexBuffer
+    private lateinit var indexBuffer: VulkanBuffer
 
     private val extensionNames = MemoryUtil.memAllocPointer(64)
     private val debugUtilExtensionName = MemoryUtil.memASCII(EXTDebugUtils.VK_EXT_DEBUG_UTILS_EXTENSION_NAME)
@@ -330,6 +331,7 @@ class Game {
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.graphicsPipeline)
 
             vkCmdBindVertexBuffers(commandBuffer, 0, longArrayOf(vertexBuffer.buffer.bufferPtr), longArrayOf(0L))
+            vkCmdBindIndexBuffer(commandBuffer, indexBuffer.bufferPtr, 0, VK_INDEX_TYPE_UINT32)
 
             val viewport = VkViewport.calloc(1, stack)
             viewport[0]
@@ -348,7 +350,8 @@ class Game {
             scissor[0].extent(swapchain.extent)
             vkCmdSetScissor(commandBuffer, 0, scissor)
 
-            vkCmdDraw(commandBuffer, 3, 1,0, 0)
+            //vkCmdDraw(commandBuffer, 3, 1,0, 0)
+            vkCmdDrawIndexed(commandBuffer, (indexBuffer.size / 4).toInt(), 1, 0, 0,0)
             vkCmdEndRenderPass(commandBuffer)
 
             checkVk(vkEndCommandBuffer(commandBuffer))
@@ -393,19 +396,32 @@ class Game {
 
     fun loadVertexData() : SimpleVertexBuffer {
         MemoryStack.stackPush().use { stack ->
-            val stagingBuffer = Buffers.createBuffer(device, 15*4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_SHARING_MODE_EXCLUSIVE, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT or VK_MEMORY_PROPERTY_HOST_COHERENT_BIT )
-            val buffer = Buffers.createBuffer(device, 15 * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT or VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_SHARING_MODE_EXCLUSIVE, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
-            val vertexBuffer = SimpleVertexBuffer(buffer)
+            val stagingBuffer = Buffers.createBuffer(device, 20*4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_SHARING_MODE_EXCLUSIVE, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT or VK_MEMORY_PROPERTY_HOST_COHERENT_BIT )
+            val buffer = Buffers.createBuffer(device, 20 * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT or VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_SHARING_MODE_EXCLUSIVE, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
             stagingBuffer.mapFloatBuffer()
                 .put(floatArrayOf(
-                    0f, -.5f,   1f, 0f, 0f,
-                    .5f, .5f,   0f, 1f, 0f,
-                    -.5f, .5f,  0f, 0f, 1f,
+                    -.5f, -.5f,   1f, 0f, 0f,
+                    .5f, -.5f,   0f, 1f, 0f,
+                     .5f, .5f,  0f, 0f, 1f,
+                    -.5f, .5f,  1f, 1f, 1f,
                 )).rewind()
             stagingBuffer.unmap()
             Buffers.copy(stagingBuffer, buffer, device, commandPool)
             stagingBuffer.close()
-            return vertexBuffer
+            return SimpleVertexBuffer(buffer)
+        }
+    }
+
+    fun loadIndexData() : VulkanBuffer {
+        MemoryStack.stackPush().use { stack ->
+            val stagingBuffer = Buffers.createBuffer(device, 6 * 4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_SHARING_MODE_EXCLUSIVE, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT or VK_MEMORY_PROPERTY_HOST_COHERENT_BIT )
+            val buffer = Buffers.createBuffer(device, 6 * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT or VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_SHARING_MODE_EXCLUSIVE, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+            stagingBuffer.mapIntBuffer()
+                .put(intArrayOf(0,1,2,2,3,0)).rewind()
+            stagingBuffer.unmap()
+            Buffers.copy(stagingBuffer, buffer, device, commandPool)
+            stagingBuffer.close()
+            return buffer
         }
     }
 
@@ -495,6 +511,7 @@ class Game {
             renderPass = RenderPass(device, swapchain)
 
             vertexBuffer = loadVertexData()
+            indexBuffer = loadIndexData()
             pipeline = Pipeline(device, renderPass, vertexBuffer)
             for (i in swapchain.imageViews.indices) {
                 frameBuffers.add(FrameBuffer(device, renderPass, swapchain, i))
@@ -513,7 +530,12 @@ class Game {
     }
 
     private fun destroy() {
-        vertexBuffer.close()
+        if (this::indexBuffer.isInitialized) {
+            indexBuffer.close()
+        }
+        if (this::vertexBuffer.isInitialized) {
+            vertexBuffer.close()
+        }
         if (commandPool != 0L) {
             vkDestroyCommandPool(device.device, commandPool, null)
         }
