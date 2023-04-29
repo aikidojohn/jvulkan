@@ -6,6 +6,8 @@ import org.lwjgl.vulkan.KHRSwapchain.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
 import org.lwjgl.vulkan.VK10.*
 import org.lwjgl.vulkan.VkAttachmentDescription
 import org.lwjgl.vulkan.VkAttachmentReference
+import org.lwjgl.vulkan.VkDescriptorSetLayoutBinding
+import org.lwjgl.vulkan.VkDescriptorSetLayoutCreateInfo
 import org.lwjgl.vulkan.VkGraphicsPipelineCreateInfo
 import org.lwjgl.vulkan.VkPipelineColorBlendAttachmentState
 import org.lwjgl.vulkan.VkPipelineColorBlendStateCreateInfo
@@ -25,13 +27,15 @@ class Pipeline(val device: LogicalDevice, val renderPass: RenderPass, val vertex
     val fragmentShader = Shader.load(device, "shaders/default.frag")
     val graphicsPipeline: Long
     val pipelineLayout: Long
+    val uboLayout: Long
 
     init {
+        //TODO make this configurable. Multiple pipelines with different configurations will be required for most applications
         MemoryStack.stackPush().use { stack ->
             val shaderStageCreateInfo = VkPipelineShaderStageCreateInfo.calloc(2, stack)
             shaderStageCreateInfo[0]
                 .`sType$Default`()
-                .stage(VK_SHADER_STAGE_VERTEX_BIT)
+                .stage(VK_SHADER_STAGE_VERTEX_BIT) //TODO add this bit to the shader
                 .module(vertexShader.id)
                 .pName(stack.ASCII("main"))
 
@@ -49,7 +53,7 @@ class Pipeline(val device: LogicalDevice, val renderPass: RenderPass, val vertex
                 .`sType$Default`()
                 .pDynamicStates(dynStates)
 
-            val vertexInput = VkPipelineVertexInputStateCreateInfo.calloc(stack)
+            val vertexInput = VkPipelineVertexInputStateCreateInfo.calloc(stack) //TODO define in shader?
                 .`sType$Default`()
                 .pVertexBindingDescriptions(vertexBuffer.getBindingDescription())
                 .pVertexAttributeDescriptions(vertexBuffer.getAttributeDescription())
@@ -71,7 +75,7 @@ class Pipeline(val device: LogicalDevice, val renderPass: RenderPass, val vertex
                 .polygonMode(VK_POLYGON_MODE_FILL)
                 .lineWidth(1.0f)
                 .cullMode(VK_CULL_MODE_BACK_BIT)
-                .frontFace(VK_FRONT_FACE_CLOCKWISE)
+                .frontFace(VK_FRONT_FACE_COUNTER_CLOCKWISE)
                 .depthBiasEnable(false)
                 .depthBiasConstantFactor(0f)
                 .depthBiasClamp(0f)
@@ -107,9 +111,24 @@ class Pipeline(val device: LogicalDevice, val renderPass: RenderPass, val vertex
                 .pAttachments(colorBlendAttachment)
                 .blendConstants(blendConstants)
 
+            //Create Uniform Buffer Layout //TODO define in shaders?
+            val uboLayoutBinding = VkDescriptorSetLayoutBinding.calloc(1, stack)
+            uboLayoutBinding[0].binding(0)
+                .descriptorType(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
+                .descriptorCount(1)
+                .stageFlags(VK_SHADER_STAGE_VERTEX_BIT)
+
+            val uboDescriptorCreateInfo = VkDescriptorSetLayoutCreateInfo.calloc(stack)
+                .`sType$Default`()
+                .pBindings(uboLayoutBinding)
+            val lp2 = stack.mallocLong(1)
+            checkVk(vkCreateDescriptorSetLayout(device.device, uboDescriptorCreateInfo, null, lp2))
+            this.uboLayout = lp2[0]
+
             //create pipeline
             val pipelineLayoutInfo = VkPipelineLayoutCreateInfo.calloc(stack)
                 .`sType$Default`()
+                .pSetLayouts(lp2)
 
             val lp = stack.mallocLong(1)
             checkVk(vkCreatePipelineLayout(device.device, pipelineLayoutInfo, null, lp))
@@ -138,6 +157,7 @@ class Pipeline(val device: LogicalDevice, val renderPass: RenderPass, val vertex
     override fun close() {
         vkDestroyPipeline(device.device, graphicsPipeline, null)
         vkDestroyPipelineLayout(device.device, pipelineLayout, null)
+        vkDestroyDescriptorSetLayout(device.device, uboLayout, null)
         vertexShader.close()
         fragmentShader.close()
     }

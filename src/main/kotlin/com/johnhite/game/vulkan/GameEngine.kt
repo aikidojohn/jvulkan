@@ -1,5 +1,7 @@
 package com.johnhite.game.vulkan
 
+import org.joml.*
+import org.lwjgl.BufferUtils
 import org.lwjgl.PointerBuffer
 import org.lwjgl.glfw.GLFW.*
 import org.lwjgl.glfw.GLFWErrorCallback
@@ -13,6 +15,7 @@ import org.lwjgl.vulkan.KHRPortabilityEnumeration.VK_KHR_PORTABILITY_ENUMERATION
 import org.lwjgl.vulkan.KHRSurface.*
 import org.lwjgl.vulkan.KHRSwapchain.*
 import org.lwjgl.vulkan.VK10.*
+import java.nio.FloatBuffer
 
 fun checkVk(errcode: Int) {
     if (errcode != 0) {
@@ -21,7 +24,6 @@ fun checkVk(errcode: Int) {
 }
 
 class Game {
-
     private val validate: Boolean = true
     private val maxFramesInFlight = 2
 
@@ -45,16 +47,15 @@ class Game {
 
     private lateinit var vertexBuffer: SimpleVertexBuffer
     private lateinit var indexBuffer: VulkanBuffer
+    private val uniformBuffers = ArrayList<VulkanBuffer>()
+    private val uniformBuffersMapped = ArrayList<FloatBuffer>()
+    private var descriptorPool: Long = 0L
+    private val descriptorSets = ArrayList<Long>()
 
     private val extensionNames = MemoryUtil.memAllocPointer(64)
     private val debugUtilExtensionName = MemoryUtil.memASCII(EXTDebugUtils.VK_EXT_DEBUG_UTILS_EXTENSION_NAME)
     private val portabilityExtensionName = MemoryUtil.memASCII(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)
 
-    /*private fun checkVk(errcode: Int) {
-        if (errcode != 0) {
-            throw IllegalStateException(String.format("Vulkan error [0x%X]", errcode));
-        }
-    }*/
 
     private fun checkLayers(stack: MemoryStack, available: VkLayerProperties.Buffer, vararg layers: String) : PointerBuffer? {
         val required = stack.mallocPointer(layers.size)
@@ -351,6 +352,9 @@ class Game {
             vkCmdSetScissor(commandBuffer, 0, scissor)
 
             //vkCmdDraw(commandBuffer, 3, 1,0, 0)
+            val ds = stack.mallocLong(1)
+            ds.put(descriptorSets[imageIndex]).rewind()
+            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipelineLayout, 0, ds, null)
             vkCmdDrawIndexed(commandBuffer, (indexBuffer.size / 4).toInt(), 1, 0, 0,0)
             vkCmdEndRenderPass(commandBuffer)
 
@@ -395,34 +399,109 @@ class Game {
     }
 
     fun loadVertexData() : SimpleVertexBuffer {
-        MemoryStack.stackPush().use { stack ->
-            val stagingBuffer = Buffers.createBuffer(device, 20*4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_SHARING_MODE_EXCLUSIVE, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT or VK_MEMORY_PROPERTY_HOST_COHERENT_BIT )
-            val buffer = Buffers.createBuffer(device, 20 * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT or VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_SHARING_MODE_EXCLUSIVE, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
-            stagingBuffer.mapFloatBuffer()
-                .put(floatArrayOf(
-                    -.5f, -.5f,   1f, 0f, 0f,
-                    .5f, -.5f,   0f, 1f, 0f,
-                     .5f, .5f,  0f, 0f, 1f,
-                    -.5f, .5f,  1f, 1f, 1f,
-                )).rewind()
-            stagingBuffer.unmap()
-            Buffers.copy(stagingBuffer, buffer, device, commandPool)
-            stagingBuffer.close()
-            return SimpleVertexBuffer(buffer)
-        }
+        val stagingBuffer = Buffers.createBuffer(device, 20*4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_SHARING_MODE_EXCLUSIVE, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT or VK_MEMORY_PROPERTY_HOST_COHERENT_BIT )
+        val buffer = Buffers.createBuffer(device, 20 * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT or VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_SHARING_MODE_EXCLUSIVE, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+        stagingBuffer.mapFloatBuffer()
+            .put(floatArrayOf(
+                -.5f, -.5f,   1f, 0f, 0f,
+                .5f, -.5f,   0f, 1f, 0f,
+                 .5f, .5f,  0f, 0f, 1f,
+                -.5f, .5f,  1f, 1f, 1f,
+            )).rewind()
+        stagingBuffer.unmap()
+        Buffers.copy(stagingBuffer, buffer, device, commandPool)
+        stagingBuffer.close()
+        return SimpleVertexBuffer(buffer)
     }
 
     fun loadIndexData() : VulkanBuffer {
+        val stagingBuffer = Buffers.createBuffer(device, 6 * 4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_SHARING_MODE_EXCLUSIVE, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT or VK_MEMORY_PROPERTY_HOST_COHERENT_BIT )
+        val buffer = Buffers.createBuffer(device, 6 * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT or VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_SHARING_MODE_EXCLUSIVE, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+        stagingBuffer.mapIntBuffer()
+            .put(intArrayOf(0,1,2,2,3,0)).rewind()
+        stagingBuffer.unmap()
+        Buffers.copy(stagingBuffer, buffer, device, commandPool)
+        stagingBuffer.close()
+        return buffer
+    }
+
+    fun createDescriptorPool() { //TODO move to shader?
         MemoryStack.stackPush().use { stack ->
-            val stagingBuffer = Buffers.createBuffer(device, 6 * 4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_SHARING_MODE_EXCLUSIVE, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT or VK_MEMORY_PROPERTY_HOST_COHERENT_BIT )
-            val buffer = Buffers.createBuffer(device, 6 * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT or VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_SHARING_MODE_EXCLUSIVE, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
-            stagingBuffer.mapIntBuffer()
-                .put(intArrayOf(0,1,2,2,3,0)).rewind()
-            stagingBuffer.unmap()
-            Buffers.copy(stagingBuffer, buffer, device, commandPool)
-            stagingBuffer.close()
-            return buffer
+            val poolSize = VkDescriptorPoolSize.calloc(1, stack)
+            poolSize[0].type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
+                .descriptorCount(maxFramesInFlight)
+
+            val poolInfo = VkDescriptorPoolCreateInfo.calloc(stack)
+                .`sType$Default`()
+                .pPoolSizes(poolSize)
+                .maxSets(maxFramesInFlight)
+
+            val lp = stack.mallocLong(1)
+            checkVk(vkCreateDescriptorPool(device.device, poolInfo, null, lp))
+            descriptorPool = lp[0]
+
+            //create descriptor sets for UBOs
+            val layouts = stack.mallocLong(maxFramesInFlight)
+            layouts.put(pipeline.uboLayout)
+            layouts.put(pipeline.uboLayout)
+            layouts.rewind()
+            val allocInfo = VkDescriptorSetAllocateInfo.calloc(stack)
+                .`sType$Default`()
+                .descriptorPool(descriptorPool)
+                .pSetLayouts(layouts)
+
+            val lp2 = stack.mallocLong(maxFramesInFlight)
+            checkVk(vkAllocateDescriptorSets(device.device, allocInfo, lp2))
+
+            for (i in 0 until maxFramesInFlight) {
+                descriptorSets.add(lp2[i])
+                val bufferInfo = VkDescriptorBufferInfo.calloc(1, stack)
+                bufferInfo[0].buffer(uniformBuffers[i].bufferPtr)
+                    .offset(0)
+                    .range(uniformBuffers[i].size)
+
+                val descriptorWrite = VkWriteDescriptorSet.calloc(1, stack)
+                descriptorWrite[0].`sType$Default`()
+                    .dstSet(descriptorSets[i])
+                    .dstBinding(0)
+                    .dstArrayElement(0)
+                    .descriptorType(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
+                    .descriptorCount(1)
+                    .pBufferInfo(bufferInfo)
+
+                vkUpdateDescriptorSets(device.device, descriptorWrite, null)
+            }
         }
+    }
+
+    private var startTime: Long = System.nanoTime()
+    fun updateUniformBuffers() {
+        val now = System.nanoTime()
+        val seconds = (now - startTime).toDouble() / 1000000000.0
+        var model = Matrix4f().rotate(AxisAngle4f(Math.toRadians(90.0f) * seconds.toFloat(), 0f, 0f, 1f))
+        var view = Matrix4f().lookAt(Vector3f(2f, 2f,2f), Vector3f(0f,0f,0f), Vector3f(0f,0f,1f))
+        var projection = Matrix4f().perspective(Math.toRadians(45f), swapchain.extent.width().toFloat() / swapchain.extent.height().toFloat(), 0.1f, 10f)
+        projection.m11(projection.m11() * -1)
+
+        val ubo = uniformBuffersMapped[currentFrame]
+        var pos = 0
+        model.get(ubo)
+        pos += 16
+        ubo.position(pos)
+        view.get(ubo)
+        pos += 16
+        ubo.position(pos)
+        projection.get(ubo)
+        pos += 16
+        ubo.position(pos)
+        ubo.rewind()
+        /*println("model")
+        println(model.toString())
+        println("UBO")
+        for (i in 0 until ubo.capacity()) {
+            print("${ubo[i]},")
+        }
+        println();*/
     }
 
     fun drawFrame() {
@@ -468,6 +547,7 @@ class Game {
                 .pCommandBuffers(commandBufferPointer)
                 .pSignalSemaphores(signalSemaphore)
 
+            updateUniformBuffers()
             checkVk(vkQueueSubmit(device.graphicsQueue, submitInfo, inFlightFence[currentFrame]))
 
             val swapChains = stack.mallocLong(1)
@@ -513,9 +593,15 @@ class Game {
             vertexBuffer = loadVertexData()
             indexBuffer = loadIndexData()
             pipeline = Pipeline(device, renderPass, vertexBuffer)
+
             for (i in swapchain.imageViews.indices) {
                 frameBuffers.add(FrameBuffer(device, renderPass, swapchain, i))
+                //TODO move to shader?
+                val ubo = Buffers.createBuffer(device, 16 * 3 * 4, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_SHARING_MODE_EXCLUSIVE, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT or VK_MEMORY_PROPERTY_HOST_COHERENT_BIT )
+                uniformBuffers.add(ubo)
+                uniformBuffersMapped.add(ubo.mapFloatBuffer())
             }
+            createDescriptorPool() //TODO is this Uniform specific? Move to Shader?
             createSyncObjects()
 
             while (!glfwWindowShouldClose(window)) {
@@ -546,8 +632,15 @@ class Game {
             vkDestroySemaphore(device.device, renderFinishedSemaphore[i], null)
         }
 
+        if (descriptorPool != 0L) {
+            vkDestroyDescriptorPool(device.device, descriptorPool, null)
+        }
+
         if (this::pipeline.isInitialized) {
             pipeline.close()
+        }
+        for (ubo in uniformBuffers) {
+            ubo.close()
         }
         for (f in frameBuffers) {
             f.close()
