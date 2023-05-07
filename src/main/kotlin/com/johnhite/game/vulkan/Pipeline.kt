@@ -22,28 +22,19 @@ import org.lwjgl.vulkan.VkPipelineViewportStateCreateInfo
 import org.lwjgl.vulkan.VkRenderPassCreateInfo
 import org.lwjgl.vulkan.VkSubpassDescription
 
-class Pipeline(val device: LogicalDevice, val renderPass: RenderPass, val vertexBuffer: Vertex) : AutoCloseable {
-    val vertexShader = Shader.load(device, "shaders/default.vert")
-    val fragmentShader = Shader.load(device, "shaders/default.frag")
-    val graphicsPipeline: Long
-    val pipelineLayout: Long
-    val uboLayout: Long
+class Pipeline(private val device: LogicalDevice, val graphicsPipeline: Long, val pipelineLayout: Long, val bufferLayouts: LongArray) : AutoCloseable {
 
-    init {
+    /*init {
         //TODO make this configurable. Multiple pipelines with different configurations will be required for most applications
         MemoryStack.stackPush().use { stack ->
-            val shaderStageCreateInfo = VkPipelineShaderStageCreateInfo.calloc(2, stack)
-            shaderStageCreateInfo[0]
-                .`sType$Default`()
-                .stage(VK_SHADER_STAGE_VERTEX_BIT) //TODO add this bit to the shader
-                .module(vertexShader.id)
-                .pName(stack.ASCII("main"))
-
-            shaderStageCreateInfo[1]
-                .`sType$Default`()
-                .stage(VK_SHADER_STAGE_FRAGMENT_BIT)
-                .module(fragmentShader.id)
-                .pName(stack.ASCII("main"))
+            val shaderStageCreateInfo = VkPipelineShaderStageCreateInfo.calloc(shaders.size, stack)
+            for ((i, shader) in shaders.withIndex()) {
+                shaderStageCreateInfo[i]
+                    .`sType$Default`()
+                    .stage(shader.stage)
+                    .module(shader.id)
+                    .pName(stack.ASCII("main")) //TODO add to shader
+            }
 
             val dynStates = stack.mallocInt(2)
             dynStates.put(intArrayOf(VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR))
@@ -152,13 +143,16 @@ class Pipeline(val device: LogicalDevice, val renderPass: RenderPass, val vertex
             checkVk(vkCreateGraphicsPipelines(device.device, VK_NULL_HANDLE, graphicsPipelineCreate, null, lp))
             graphicsPipeline = lp[0]
         }
-    }
+    }*/
 
     override fun close() {
         vkDestroyPipeline(device.device, graphicsPipeline, null)
         vkDestroyPipelineLayout(device.device, pipelineLayout, null)
-        vkDestroyDescriptorSetLayout(device.device, uboLayout, null)
-        vertexShader.close()
-        fragmentShader.close()
+        for (descriptor in bufferLayouts) {
+            vkDestroyDescriptorSetLayout(device.device, descriptor, null)
+        }
+        /*for (shader in shaders) {
+            shader.close()
+        }*/
     }
 }

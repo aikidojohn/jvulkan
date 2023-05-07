@@ -4,6 +4,7 @@ import org.lwjgl.system.MemoryStack
 import org.lwjgl.vulkan.*
 import org.lwjgl.vulkan.VK10.vkGetPhysicalDeviceMemoryProperties
 import java.lang.StringBuilder
+import java.util.stream.Collectors
 
 class PhysicalDevice(val device: VkPhysicalDevice) : AutoCloseable {
     val properties: VkPhysicalDeviceProperties = VkPhysicalDeviceProperties.malloc()
@@ -33,11 +34,12 @@ class PhysicalDevice(val device: VkPhysicalDevice) : AutoCloseable {
     }
 
     fun supportsExtensions(requestedExtensions : Set<String>) : Boolean {
-        val intersection = this.extensions.stream().map { e -> e.extensionNameString() }.filter { e -> requestedExtensions.contains(e) }.toList()
+        val intersection = this.extensions.stream().map { e -> e.extensionNameString() }.filter { e -> requestedExtensions.contains(e) }.collect(
+            Collectors.toSet())
         if (intersection.size == requestedExtensions.size) {
             return true
         } else {
-            val missing = requestedExtensions.subtract(intersection.toSet())
+            val missing = requestedExtensions.subtract(intersection)
             for (m in missing) {
                 println("Missing extension: $m")
             }

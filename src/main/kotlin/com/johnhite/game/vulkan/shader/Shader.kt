@@ -11,18 +11,20 @@ import org.lwjgl.vulkan.VkShaderModuleCreateInfo
 import java.io.File
 import java.nio.ByteBuffer
 
-class Shader(val id: Long, private val device: LogicalDevice) : AutoCloseable {
+class Shader(val id: Long, val stage: Int, private val device: LogicalDevice) : AutoCloseable {
 
     companion object {
-        fun load(device: LogicalDevice, shaderSrc: File) : Shader {
+        fun load(device: LogicalDevice, shaderSrc: File, stage: Int? = null) : Shader {
             val code = compile(shaderSrc)
-            return Shader(create(device, code), device)
+            val finalStage = stage ?: shadercKindToVulkanKind(senseShaderKind(shaderSrc))
+            return Shader(create(device, code), finalStage, device)
         }
 
-        fun load(device: LogicalDevice, resourcePath: String) : Shader {
+        fun load(device: LogicalDevice, resourcePath: String, stage: Int? = null) : Shader {
             val code = compile(resourcePath)
             val id = create(device, code)
-            return Shader(id, device)
+            val finalStage = stage ?: shadercKindToVulkanKind(senseShaderKind(Resources.getFile(resourcePath)))
+            return Shader(id, finalStage, device)
         }
         fun create(device: LogicalDevice, byteCode: ByteBuffer) : Long {
             MemoryStack.stackPush().use { stack ->
@@ -32,6 +34,7 @@ class Shader(val id: Long, private val device: LogicalDevice) : AutoCloseable {
 
                 val lp = stack.mallocLong(1)
                 checkVk(vkCreateShaderModule(device.device, createInfo, null, lp))
+                MemoryUtil.memFree(byteCode)
                 return lp[0]
             }
         }
@@ -88,6 +91,18 @@ class Shader(val id: Long, private val device: LogicalDevice) : AutoCloseable {
                 "geom" -> Shaderc.shaderc_glsl_geometry_shader
                 "comp" -> Shaderc.shaderc_glsl_compute_shader
                 else -> Shaderc.shaderc_glsl_infer_from_source
+            }
+        }
+
+        private fun shadercKindToVulkanKind(kind: Int) : Int {
+            return when(kind) {
+                Shaderc.shaderc_glsl_vertex_shader -> VK_SHADER_STAGE_VERTEX_BIT
+                Shaderc.shaderc_glsl_fragment_shader -> VK_SHADER_STAGE_FRAGMENT_BIT
+                Shaderc.shaderc_glsl_tess_control_shader -> VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT
+                Shaderc.shaderc_glsl_tess_evaluation_shader -> VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT
+                Shaderc.shaderc_glsl_geometry_shader -> VK_SHADER_STAGE_GEOMETRY_BIT
+                Shaderc.shaderc_glsl_compute_shader -> VK_SHADER_STAGE_COMPUTE_BIT
+                else -> VK_SHADER_STAGE_ALL
             }
         }
     }
